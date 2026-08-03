@@ -31,11 +31,30 @@ pub fn run() {
 
             let state = app.state::<AppState>().inner().clone();
             tauri::async_runtime::spawn(async move {
-                humble::resume_saved_session(&state).await;
-                if state.humble_session.read().await.is_some() {
-                    let _ = entitlements::load_cached_or_refresh(state.clone()).await;
+                match credential_store::load().await {
+                    Ok(credentials) => {
+                        humble::resume_saved_session(&state, credentials.humble_session).await;
+                        if state.humble_session.read().await.is_some() {
+                            let _ = entitlements::load_cached_or_refresh(state.clone()).await;
+                        }
+                        steam::resume_saved_login(state, credentials.steam).await;
+                    }
+                    Err(error) => {
+                        let error = error
+                            .lines()
+                            .next()
+                            .unwrap_or("Could not access the system credential store.")
+                            .to_string();
+                        state
+                            .update_view(|view| {
+                                view.humble.phase = "error".to_string();
+                                view.humble.error = Some(error.clone());
+                                view.steam.phase = "error".to_string();
+                                view.steam.error = Some(error);
+                            })
+                            .await;
+                    }
                 }
-                steam::resume_saved_login(state).await;
             });
             Ok(())
         })

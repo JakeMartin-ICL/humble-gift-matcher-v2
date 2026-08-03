@@ -21,7 +21,8 @@ const FRIEND_LIST_URL: &str = "https://api.steampowered.com/ISteamUserOAuth/GetF
 
 #[tauri::command]
 pub async fn start_steam_login(state: State<'_, AppState>) -> Result<(), String> {
-    start_login(state.inner().clone(), true).await
+    let saved = credential_store::load().await?.steam;
+    start_login(state.inner().clone(), true, saved).await
 }
 
 #[tauri::command]
@@ -68,21 +69,9 @@ pub async fn disconnect_steam(state: State<'_, AppState>) -> Result<(), String> 
     Ok(())
 }
 
-pub async fn resume_saved_login(state: AppState) {
-    let credentials = match credential_store::load().await {
-        Ok(credentials) => credentials,
-        Err(error) => {
-            state
-                .update_view(|view| {
-                    view.steam.phase = "error".to_string();
-                    view.steam.error = Some(sanitise_error(&error));
-                })
-                .await;
-            return;
-        }
-    };
-    if credentials.steam.is_some()
-        && let Err(error) = start_login(state.clone(), false).await
+pub async fn resume_saved_login(state: AppState, saved: Option<SavedSteamLogin>) {
+    if saved.is_some()
+        && let Err(error) = start_login(state.clone(), false, saved).await
     {
         state
             .update_view(|view| {
@@ -93,7 +82,11 @@ pub async fn resume_saved_login(state: AppState) {
     }
 }
 
-async fn start_login(state: AppState, allow_qr: bool) -> Result<(), String> {
+async fn start_login(
+    state: AppState,
+    allow_qr: bool,
+    saved: Option<SavedSteamLogin>,
+) -> Result<(), String> {
     let mut task_slot = state.steam_task.lock().await;
     if let Some(task) = task_slot.take() {
         task.abort();
@@ -113,7 +106,7 @@ async fn start_login(state: AppState, allow_qr: bool) -> Result<(), String> {
 
     let task_state = state.clone();
     let task = tauri::async_runtime::spawn(async move {
-        if let Err(error) = run_login(&task_state, allow_qr).await {
+        if let Err(error) = run_login(&task_state, allow_qr, saved).await {
             #[cfg(debug_assertions)]
             eprintln!("STEAM_AUTH_ERROR={}", sanitise_error(&error));
             task_state
@@ -130,11 +123,15 @@ async fn start_login(state: AppState, allow_qr: bool) -> Result<(), String> {
     Ok(())
 }
 
-async fn run_login(state: &AppState, allow_qr: bool) -> Result<(), String> {
-    if let Some(saved) = credential_store::load().await?.steam {
+async fn run_login(
+    state: &AppState,
+    allow_qr: bool,
+    saved: Option<SavedSteamLogin>,
+) -> Result<(), String> {
+    if let Some(saved) = saved {
         state
             .update_view(|view| {
-                view.steam.message = "Reconnecting with the saved development session…".to_string();
+                view.steam.message = "Reconnecting with your saved Steam session…".to_string();
                 view.steam.remembered = true;
             })
             .await;

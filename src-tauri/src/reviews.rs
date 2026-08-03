@@ -114,7 +114,7 @@ async fn run_load(state: &AppState, app_ids: BTreeSet<u32>) -> Result<(), String
     }
 
     let client = reqwest::Client::builder()
-        .user_agent("Humble Gift Matcher/0.1")
+        .user_agent("Humble Gift Matcher/1.0")
         .timeout(Duration::from_secs(12))
         .build()
         .map_err(|error| error.to_string())?;

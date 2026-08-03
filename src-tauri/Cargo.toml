@@ -1,6 +1,6 @@
 [package]
 name = "humble-gift-matcher"
-version = "1.0.0"
+version = "1.0.1"
 description = "A local-first matcher for Humble entitlements and Steam wishlists"
 edition = "2024"
 

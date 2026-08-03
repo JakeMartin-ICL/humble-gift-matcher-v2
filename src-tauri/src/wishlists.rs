@@ -21,6 +21,7 @@ const CACHE_VERSION: u32 = 1;
 const MAPPING_CACHE_VERSION: u32 = 2;
 const STORE_SEARCH_CACHE_VERSION: u32 = 2;
 const STORE_SEARCH_CACHE_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
+const STORE_SEARCH_CONCURRENCY: usize = 6;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct AppIdentity {
@@ -82,11 +83,22 @@ pub async fn search_steam_apps(query: String) -> Result<Vec<MappingCandidateView
 }
 
 async fn search_store(query: &str) -> Result<Vec<MappingCandidateView>, String> {
-    let client = reqwest::Client::builder()
-        .user_agent("Humble Gift Matcher/0.1")
+    let client = steam_store_client()?;
+    search_store_with_client(&client, query).await
+}
+
+fn steam_store_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .user_agent("Humble Gift Matcher/1.0")
         .timeout(Duration::from_secs(12))
         .build()
-        .map_err(|_| "Could not reach Steam search.".to_string())?;
+        .map_err(|_| "Could not reach Steam search.".to_string())
+}
+
+async fn search_store_with_client(
+    client: &reqwest::Client,
+    query: &str,
+) -> Result<Vec<MappingCandidateView>, String> {
     let mut candidates = BTreeMap::new();
     for search_term in store_search_terms(query) {
         let response = client
@@ -284,9 +296,22 @@ pub async fn start_refresh(state: AppState) -> Result<(), String> {
         if let Err(error) = run_refresh(&task_state).await {
             task_state
                 .update_view(|view| {
-                    view.wishlists.phase = "error".to_string();
-                    view.wishlists.message = "Steam wishlist matching stopped.".to_string();
-                    view.wishlists.error = Some(sanitise_error(&error));
+                    let error = sanitise_error(&error);
+                    if view.wishlists.people.is_empty() {
+                        view.wishlists.phase = "error".to_string();
+                        view.wishlists.message = "Steam wishlist loading stopped.".to_string();
+                        view.wishlists.error = Some(error);
+                    } else {
+                        view.wishlists.phase = "complete".to_string();
+                        view.wishlists.message = format!(
+                            "{} gift matches across {} accessible wishlists.",
+                            view.wishlists.matches.len(),
+                            view.wishlists.people_accessible
+                        );
+                        view.wishlists.error = Some(format!(
+                            "Some Steam matching data could not be loaded: {error}"
+                        ));
+                    }
                 })
                 .await;
         }
@@ -347,7 +372,7 @@ async fn run_refresh(state: &AppState) -> Result<(), String> {
         .await;
 
     let http = reqwest::Client::builder()
-        .user_agent("Humble Gift Matcher/0.1")
+        .user_agent("Humble Gift Matcher/1.0")
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|error| error.to_string())?;
@@ -391,14 +416,29 @@ async fn run_refresh(state: &AppState) -> Result<(), String> {
         .count();
     let wishlist_apps = memberships.len();
     *state.wishlist_memberships.write().await = memberships.clone();
+    let wishlist_items = build_person_wishlists(&resolved_people, &memberships, &[]);
     state
         .update_view(|view| {
             view.wishlists.people = resolved_people.clone();
             view.wishlists.people_accessible = accessible;
             view.wishlists.people_inaccessible = inaccessible;
             view.wishlists.wishlist_apps = wishlist_apps;
+            view.wishlists.wishlist_items = wishlist_items;
             view.wishlists.message =
-                format!("Loaded {accessible} accessible Steam wishlists. Matching titles…");
+                format!("Loaded {accessible} accessible Steam wishlists. Preparing matches…");
+            view.wishlists.error = temporary_errors
+                .first()
+                .map(|error| format!("Some wishlists could not be checked: {error}"));
+        })
+        .await;
+    rebuild_matches(state).await;
+    state
+        .update_view(|view| {
+            view.wishlists.phase = "complete".to_string();
+            view.wishlists.message = format!(
+                "{} gift matches found. Loading Steam titles in the background…",
+                view.wishlists.matches.len()
+            );
         })
         .await;
     #[cfg(debug_assertions)]
@@ -422,11 +462,22 @@ async fn run_refresh(state: &AppState) -> Result<(), String> {
         .copied()
         .chain(entitlement_app_ids)
         .collect::<BTreeSet<_>>();
-    let identities = if identity_app_ids.is_empty() {
-        Vec::new()
+    let (identities, identity_warning) = if identity_app_ids.is_empty() {
+        (Vec::new(), None)
     } else {
         load_app_identities(state, &client, identity_app_ids.into_iter()).await?
     };
+    if let Some(warning) = identity_warning {
+        temporary_errors.push(format!(
+            "Some Steam game titles could not be loaded: {warning}"
+        ));
+    }
+    let wishlist_items = build_person_wishlists(&resolved_people, &memberships, &identities);
+    state
+        .update_view(|view| {
+            view.wishlists.wishlist_items = wishlist_items;
+        })
+        .await;
     validate_humble_mappings(state, &identities).await;
     apply_saved_mappings(state).await?;
     let unresolved_titles = {
@@ -437,12 +488,6 @@ async fn run_refresh(state: &AppState) -> Result<(), String> {
             .filter(|item| item.status == "needs_mapping")
             .count()
     };
-    let wishlist_items = build_person_wishlists(&resolved_people, &memberships, &identities);
-    state
-        .update_view(|view| {
-            view.wishlists.wishlist_items = wishlist_items;
-        })
-        .await;
     if unresolved_titles > 0 {
         apply_automatic_mappings(state, &identities).await?;
     }
@@ -603,7 +648,7 @@ async fn load_app_identities(
     state: &AppState,
     client: &steamroom::client::SteamClient<steamroom::client::LoggedIn>,
     app_ids: impl Iterator<Item = u32>,
-) -> Result<Vec<AppIdentity>, String> {
+) -> Result<(Vec<AppIdentity>, Option<String>), String> {
     let mut cache = load_identity_file().await?;
     let requested = app_ids.collect::<BTreeSet<_>>();
     let missing = requested
@@ -612,12 +657,16 @@ async fn load_app_identities(
         .copied()
         .collect::<Vec<_>>();
     let _protocol_guard = state.steam_protocol_gate.lock().await;
+    let mut warning = None;
     for batch in missing.chunks(25) {
         let app_ids = batch.iter().copied().map(AppId).collect::<Vec<_>>();
-        let mut tokens = client
-            .pics_get_access_tokens(&app_ids)
-            .await
-            .map_err(|error| error.to_string())?;
+        let mut tokens = match client.pics_get_access_tokens(&app_ids).await {
+            Ok(tokens) => tokens,
+            Err(error) => {
+                warning = Some(sanitise_error(&error.to_string()));
+                break;
+            }
+        };
         let token_ids = tokens
             .iter()
             .map(|token| token.app_id.0)
@@ -631,10 +680,13 @@ async fn load_app_identities(
                     token: 0,
                 }),
         );
-        let infos = client
-            .pics_get_product_info(&tokens)
-            .await
-            .map_err(|error| error.to_string())?;
+        let infos = match client.pics_get_product_info(&tokens).await {
+            Ok(infos) => infos,
+            Err(error) => {
+                warning = Some(sanitise_error(&error.to_string()));
+                break;
+            }
+        };
         let mut product_buffers = infos
             .into_iter()
             .filter_map(|info| Some((info.app_id?.0, info.kv_data?)))
@@ -686,10 +738,13 @@ async fn load_app_identities(
             .await;
     }
     save_identity_file(&cache).await?;
-    Ok(requested
-        .iter()
-        .filter_map(|app_id| cache.records.get(app_id).cloned())
-        .collect())
+    Ok((
+        requested
+            .iter()
+            .filter_map(|app_id| cache.records.get(app_id).cloned())
+            .collect(),
+        warning,
+    ))
 }
 
 fn parse_app_identity(app_id: u32, buffer: &[u8]) -> Result<AppIdentity, String> {
@@ -849,7 +904,8 @@ async fn apply_store_exact_mappings(state: &AppState) -> Result<(), String> {
     let total = unresolved.len();
     let mut cache = load_store_search_file().await?;
     let mut results = BTreeMap::new();
-    for (index, (mapping_key, title)) in unresolved.into_iter().enumerate() {
+    let mut pending = Vec::new();
+    for (mapping_key, title) in unresolved {
         let cached = cache
             .records
             .get(&mapping_key)
@@ -858,33 +914,49 @@ async fn apply_store_exact_mappings(state: &AppState) -> Result<(), String> {
                     && now.saturating_sub(record.checked_at) < STORE_SEARCH_CACHE_TTL_SECONDS
             })
             .cloned();
-        let candidates = if let Some(record) = cached {
-            record.candidates
+        if let Some(record) = cached {
+            results.insert(mapping_key, record.candidates);
         } else if (2..=120).contains(&title.chars().count()) {
-            match search_store(&title).await {
-                Ok(candidates) => {
-                    cache.records.insert(
-                        mapping_key.clone(),
-                        StoreSearchRecord {
-                            query: title,
-                            checked_at: now,
-                            candidates: candidates.clone(),
-                        },
-                    );
-                    candidates
-                }
-                Err(_) => continue,
+            pending.push((mapping_key, title));
+        }
+    }
+
+    let mut completed = total.saturating_sub(pending.len());
+    if !pending.is_empty() {
+        let client = steam_store_client()?;
+        let mut searches = stream::iter(pending.into_iter().map(|(mapping_key, title)| {
+            let client = client.clone();
+            async move {
+                let result = search_store_with_client(&client, &title).await;
+                (mapping_key, title, result)
             }
-        } else {
-            continue;
-        };
-        results.insert(mapping_key, candidates);
+        }))
+        .buffer_unordered(STORE_SEARCH_CONCURRENCY);
+        while let Some((mapping_key, title, result)) = searches.next().await {
+            completed += 1;
+            if let Ok(candidates) = result {
+                cache.records.insert(
+                    mapping_key.clone(),
+                    StoreSearchRecord {
+                        query: title,
+                        checked_at: now,
+                        candidates: candidates.clone(),
+                    },
+                );
+                results.insert(mapping_key, candidates);
+            }
+            state
+                .update_view(|view| {
+                    view.wishlists.message =
+                        format!("Checking unresolved titles on Steam ({completed}/{total})…");
+                })
+                .await;
+        }
+    } else {
         state
             .update_view(|view| {
-                view.wishlists.message = format!(
-                    "Checking unresolved titles on Steam ({}/{total})…",
-                    index + 1
-                );
+                view.wishlists.message =
+                    format!("Checking unresolved titles on Steam ({completed}/{total})…");
             })
             .await;
     }
@@ -1372,6 +1444,28 @@ mod tests {
             vec!["Alpha", "Zeta"]
         );
         assert!(!wishlists.contains_key("private"));
+    }
+
+    #[test]
+    fn wishlists_are_available_before_steam_titles_finish_loading() {
+        let alice = WishlistPersonView {
+            steam_id: "alice".to_string(),
+            display_name: "Alice".to_string(),
+            avatar_url: None,
+            is_self: false,
+            wishlist_access: "accessible".to_string(),
+            wishlist_count: 2,
+        };
+        let memberships = BTreeMap::from([(20, vec![alice.clone()]), (10, vec![alice.clone()])]);
+        let wishlists = build_person_wishlists(&[alice], &memberships, &[]);
+
+        assert_eq!(
+            wishlists["alice"]
+                .iter()
+                .map(|game| game.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Steam App 10", "Steam App 20"]
+        );
     }
 
     #[test]

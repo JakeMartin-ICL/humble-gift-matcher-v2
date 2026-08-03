@@ -79,7 +79,7 @@ pub async fn load_steam_game_details(
     }
 
     let client = reqwest::Client::builder()
-        .user_agent("Humble Gift Matcher/0.1")
+        .user_agent("Humble Gift Matcher/1.0")
         .timeout(Duration::from_secs(15))
         .build()
         .map_err(|error| error.to_string())?;

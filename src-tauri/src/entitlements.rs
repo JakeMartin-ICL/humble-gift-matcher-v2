@@ -403,7 +403,7 @@ fn cache_path() -> Result<PathBuf, String> {
 
 fn build_client() -> Result<reqwest::Client, HumbleApiError> {
     reqwest::Client::builder()
-        .user_agent("Humble Gift Matcher/0.1")
+        .user_agent("Humble Gift Matcher/1.0")
         .timeout(Duration::from_secs(20))
         .build()
         .map_err(|error| HumbleApiError::Request(sanitise_error(&error.to_string())))

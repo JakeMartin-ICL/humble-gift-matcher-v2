@@ -244,64 +244,50 @@ pub async fn open_humble_entitlement(
     Ok(())
 }
 
-pub async fn resume_saved_session(state: &AppState) {
-    match credential_store::load().await {
-        Ok(credentials) => {
-            if let Some(session) = credentials.humble_session {
+pub async fn resume_saved_session(state: &AppState, session: Option<String>) {
+    if let Some(session) = session {
+        state
+            .update_view(|view| {
+                view.humble.phase = "connecting".to_string();
+                view.humble.message = "Validating the saved Humble session…".to_string();
+                view.humble.error = None;
+                view.humble.remembered = true;
+            })
+            .await;
+        match entitlements::validate_humble_session(&session).await {
+            Ok(()) => {
+                *state.humble_session.write().await = Some(session);
                 state
                     .update_view(|view| {
-                        view.humble.phase = "connecting".to_string();
-                        view.humble.message = "Validating the saved Humble session…".to_string();
+                        view.humble.phase = "connected".to_string();
+                        view.humble.message =
+                            "Humble is connected with your saved session.".to_string();
                         view.humble.error = None;
                         view.humble.remembered = true;
                     })
                     .await;
-                match entitlements::validate_humble_session(&session).await {
-                    Ok(()) => {
-                        *state.humble_session.write().await = Some(session);
-                        state
-                            .update_view(|view| {
-                                view.humble.phase = "connected".to_string();
-                                view.humble.message =
-                                    "Humble is connected with the saved development session."
-                                        .to_string();
-                                view.humble.error = None;
-                                view.humble.remembered = true;
-                            })
-                            .await;
-                    }
-                    Err(HumbleSessionValidationError::Expired) => {
-                        if let Err(error) = forget_expired_session(state).await {
-                            state
-                                .update_view(|view| {
-                                    view.humble.phase = "error".to_string();
-                                    view.humble.error = Some(error);
-                                })
-                                .await;
-                        }
-                    }
-                    Err(HumbleSessionValidationError::Unavailable(error)) => {
-                        state
-                            .update_view(|view| {
-                                view.humble.phase = "error".to_string();
-                                view.humble.message =
-                                    "The saved Humble session could not be verified.".to_string();
-                                view.humble.error = Some(error);
-                                view.humble.remembered = true;
-                            })
-                            .await;
-                    }
+            }
+            Err(HumbleSessionValidationError::Expired) => {
+                if let Err(error) = forget_expired_session(state).await {
+                    state
+                        .update_view(|view| {
+                            view.humble.phase = "error".to_string();
+                            view.humble.error = Some(error);
+                        })
+                        .await;
                 }
             }
-        }
-        Err(error) => {
-            state
-                .update_view(|view| {
-                    view.humble.phase = "error".to_string();
-                    view.humble.error =
-                        Some(error.lines().next().unwrap_or("Unknown error").into());
-                })
-                .await;
+            Err(HumbleSessionValidationError::Unavailable(error)) => {
+                state
+                    .update_view(|view| {
+                        view.humble.phase = "error".to_string();
+                        view.humble.message =
+                            "The saved Humble session could not be verified.".to_string();
+                        view.humble.error = Some(error);
+                        view.humble.remembered = true;
+                    })
+                    .await;
+            }
         }
     }
 }

@@ -377,6 +377,31 @@ describe("account onboarding", () => {
     );
   });
 
+  it("keeps wishlists usable while Steam title matching continues", async () => {
+    const user = userEvent.setup();
+    const refiningView: AppView = {
+      ...connectedView,
+      wishlists: {
+        ...connectedView.wishlists,
+        message: "Checking unresolved titles on Steam (25/100)…",
+      },
+    };
+    mockedInvoke.mockImplementation(async (command) => {
+      if (command === "get_app_view") return refiningView;
+      return undefined;
+    });
+
+    render(<App />);
+
+    expect(
+      await screen.findByText("Checking unresolved titles on Steam (25/100)…"),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /People/ }));
+    await user.click(screen.getByRole("button", { name: /Alice/ }));
+    expect(screen.getByText("Giftable Hero")).toBeInTheDocument();
+    expect(screen.getByText("SteamWorld Dig")).toBeInTheDocument();
+  });
+
   it("navigates between matches, people, and mapping corrections", async () => {
     const user = userEvent.setup();
     const viewWithAutomaticMatch: AppView = {
