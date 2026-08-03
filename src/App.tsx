@@ -477,6 +477,8 @@ function Workspace({
   const [selectedEntitlementId, setSelectedEntitlementId] = useState<
     string | null
   >(null);
+  const [humbleBrowserOpening, setHumbleBrowserOpening] = useState(false);
+  const humbleBrowserOpeningRef = useRef(false);
   const selectedEntitlement =
     view.entitlements.items.find(
       (item) => item.id === selectedEntitlementId,
@@ -486,9 +488,23 @@ function Workspace({
       setSelectedEntitlementId(item.id);
     }
   };
+  const openHumblePage = useCallback(
+    async (url: string) => {
+      if (humbleBrowserOpeningRef.current) return;
+      humbleBrowserOpeningRef.current = true;
+      setHumbleBrowserOpening(true);
+      try {
+        await onOpenHumble(url);
+      } finally {
+        humbleBrowserOpeningRef.current = false;
+        setHumbleBrowserOpening(false);
+      }
+    },
+    [onOpenHumble],
+  );
   const openEntitlementSource = (item: Entitlement) => {
     if (item.purchaseUrl) {
-      void onOpenHumble(item.purchaseUrl);
+      void openHumblePage(item.purchaseUrl);
     }
   };
   const normalizedQuery = query.trim().toLowerCase();
@@ -800,8 +816,22 @@ function Workspace({
           onClose={() => setSelectedEntitlementId(null)}
           onLoad={onLoadGameDetails}
           onOpenSteam={onOpenSteam}
-          onOpenHumble={onOpenHumble}
+          onOpenHumble={openHumblePage}
         />
+      )}
+      {humbleBrowserOpening && (
+        <aside
+          className="humble-browser-loading"
+          role="status"
+          aria-label="Opening Humble"
+          aria-live="polite"
+        >
+          <span className="match-spinner" aria-hidden="true" />
+          <span>
+            <strong>Opening Humble…</strong>
+            <small>Preparing your signed-in browser</small>
+          </span>
+        </aside>
       )}
     </main>
   );

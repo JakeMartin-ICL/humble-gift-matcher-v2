@@ -201,6 +201,9 @@ pub async fn open_humble_entitlement(
     let (bootstrap_loaded_tx, bootstrap_loaded_rx) = tokio::sync::oneshot::channel();
     let bootstrap_loaded_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(bootstrap_loaded_tx)));
     let page_load_tx = bootstrap_loaded_tx.clone();
+    let (destination_shown_tx, destination_shown_rx) = tokio::sync::oneshot::channel();
+    let page_destination_tx =
+        std::sync::Arc::new(std::sync::Mutex::new(Some(destination_shown_tx)));
     let destination_shown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let page_destination_shown = destination_shown.clone();
     let window = WebviewWindowBuilder::new(
@@ -228,6 +231,11 @@ pub async fn open_humble_entitlement(
         } else if !page_destination_shown.swap(true, std::sync::atomic::Ordering::AcqRel) {
             let _ = window.show();
             let _ = window.set_focus();
+            if let Ok(mut sender) = page_destination_tx.lock()
+                && let Some(sender) = sender.take()
+            {
+                let _ = sender.send(());
+            }
         }
     })
     .build()
@@ -241,6 +249,10 @@ pub async fn open_humble_entitlement(
         return Err(error);
     }
     window.navigate(url).map_err(|error| error.to_string())?;
+    tokio::time::timeout(std::time::Duration::from_secs(45), destination_shown_rx)
+        .await
+        .map_err(|_| "The authenticated Humble page took too long to open.".to_string())?
+        .map_err(|_| "The authenticated Humble window stopped unexpectedly.".to_string())?;
     Ok(())
 }
 

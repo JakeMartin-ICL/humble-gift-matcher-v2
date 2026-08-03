@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 const DEVELOPMENT_CACHE_ENV: &str = "HGM_INSECURE_DEV_CREDENTIAL_CACHE";
 const KEYRING_SERVICE: &str = "com.jakemartin.humble-gift-matcher";
+#[cfg(target_os = "macos")]
+const CREDENTIALS_ENTRY: &str = "credentials-v1";
 const STEAM_LOGIN_ENTRY: &str = "steam-login";
 const STEAM_ACCESS_TOKEN_ENTRY: &str = "steam-access-token";
 const HUMBLE_SESSION_ENTRY: &str = "humble-session";
@@ -113,11 +115,15 @@ async fn migrate_development_cache(
 }
 
 mod secure {
+    #[cfg(target_os = "macos")]
+    use super::CREDENTIALS_ENTRY;
     use super::{
         DevelopmentCredentials, HUMBLE_SESSION_ENTRY, KEYRING_SERVICE, STEAM_ACCESS_TOKEN_ENTRY,
         STEAM_LOGIN_ENTRY, SavedSteamLogin,
     };
     use keyring::{Entry, Error};
+    use std::sync::OnceLock;
+    use tokio::sync::Mutex;
 
     #[derive(Deserialize, Serialize)]
     struct StoredSteamLogin {
@@ -128,53 +134,58 @@ mod secure {
     use serde::{Deserialize, Serialize};
 
     pub async fn load() -> Result<DevelopmentCredentials, String> {
-        tauri::async_runtime::spawn_blocking(load_blocking)
-            .await
-            .map_err(|error| format!("System credential-store task failed: {error}"))?
+        let _guard = mutation_gate().lock().await;
+        run_blocking(load_blocking).await
     }
 
     #[cfg(debug_assertions)]
     pub async fn save_all(credentials: DevelopmentCredentials) -> Result<(), String> {
-        tauri::async_runtime::spawn_blocking(move || {
-            match credentials.steam {
-                Some(login) => save_steam_blocking(login)?,
-                None => delete_steam_blocking()?,
-            }
-            match credentials.humble_session {
-                Some(session) => set_password(HUMBLE_SESSION_ENTRY, &session)?,
-                None => delete_entry(HUMBLE_SESSION_ENTRY)?,
-            }
-            Ok(())
-        })
-        .await
-        .map_err(|error| format!("System credential-store task failed: {error}"))?
+        let _guard = mutation_gate().lock().await;
+        run_blocking(move || save_all_blocking(credentials)).await
     }
 
     pub async fn save_steam(login: SavedSteamLogin) -> Result<(), String> {
-        tauri::async_runtime::spawn_blocking(move || save_steam_blocking(login))
-            .await
-            .map_err(|error| format!("System credential-store task failed: {error}"))?
+        let _guard = mutation_gate().lock().await;
+        run_blocking(move || save_steam_blocking(login)).await
     }
 
     pub async fn delete_steam() -> Result<(), String> {
-        tauri::async_runtime::spawn_blocking(delete_steam_blocking)
-            .await
-            .map_err(|error| format!("System credential-store task failed: {error}"))?
+        let _guard = mutation_gate().lock().await;
+        run_blocking(delete_steam_blocking).await
     }
 
     pub async fn save_humble(session: String) -> Result<(), String> {
-        tauri::async_runtime::spawn_blocking(move || set_password(HUMBLE_SESSION_ENTRY, &session))
-            .await
-            .map_err(|error| format!("System credential-store task failed: {error}"))?
+        let _guard = mutation_gate().lock().await;
+        run_blocking(move || save_humble_blocking(session)).await
     }
 
     pub async fn delete_humble() -> Result<(), String> {
-        tauri::async_runtime::spawn_blocking(|| delete_entry(HUMBLE_SESSION_ENTRY))
-            .await
-            .map_err(|error| format!("System credential-store task failed: {error}"))?
+        let _guard = mutation_gate().lock().await;
+        run_blocking(delete_humble_blocking).await
     }
 
+    #[cfg(target_os = "macos")]
     fn load_blocking() -> Result<DevelopmentCredentials, String> {
+        if let Some(encoded) = read_optional(CREDENTIALS_ENTRY)? {
+            return decode_credentials(&encoded);
+        }
+
+        let credentials = load_legacy_credentials()?;
+        if credentials.steam.is_some() || credentials.humble_session.is_some() {
+            save_credentials_blocking(&credentials)?;
+            // Do not touch the three legacy items again during startup:
+            // macOS can request a second authorization for each deletion.
+            // The next credential mutation or disconnect cleans them up.
+        }
+        Ok(credentials)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn load_blocking() -> Result<DevelopmentCredentials, String> {
+        load_legacy_credentials()
+    }
+
+    fn load_legacy_credentials() -> Result<DevelopmentCredentials, String> {
         let stored_login = read_optional(STEAM_LOGIN_ENTRY)?
             .map(|encoded| {
                 serde_json::from_str::<StoredSteamLogin>(&encoded)
@@ -194,7 +205,79 @@ mod secure {
         })
     }
 
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    fn save_all_blocking(credentials: DevelopmentCredentials) -> Result<(), String> {
+        save_credentials_blocking(&credentials)?;
+        delete_legacy_entries()
+    }
+
+    #[cfg(all(debug_assertions, not(target_os = "macos")))]
+    fn save_all_blocking(credentials: DevelopmentCredentials) -> Result<(), String> {
+        match credentials.steam {
+            Some(login) => save_steam_legacy_blocking(login)?,
+            None => delete_steam_legacy_blocking()?,
+        }
+        match credentials.humble_session {
+            Some(session) => set_password(HUMBLE_SESSION_ENTRY, &session),
+            None => delete_entry(HUMBLE_SESSION_ENTRY),
+        }
+    }
+
+    #[cfg(target_os = "macos")]
     fn save_steam_blocking(login: SavedSteamLogin) -> Result<(), String> {
+        let mut credentials = load_blocking()?;
+        credentials.steam = Some(login);
+        save_credentials_blocking(&credentials)?;
+        delete_legacy_entries()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn save_steam_blocking(login: SavedSteamLogin) -> Result<(), String> {
+        save_steam_legacy_blocking(login)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn delete_steam_blocking() -> Result<(), String> {
+        let mut credentials = load_blocking()?;
+        credentials.steam = None;
+        save_credentials_blocking(&credentials)?;
+        delete_entry(STEAM_LOGIN_ENTRY)?;
+        delete_entry(STEAM_ACCESS_TOKEN_ENTRY)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn delete_steam_blocking() -> Result<(), String> {
+        delete_steam_legacy_blocking()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn save_humble_blocking(session: String) -> Result<(), String> {
+        let mut credentials = load_blocking()?;
+        credentials.humble_session = Some(session);
+        save_credentials_blocking(&credentials)?;
+        delete_legacy_entries()
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn save_humble_blocking(session: String) -> Result<(), String> {
+        set_password(HUMBLE_SESSION_ENTRY, &session)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn delete_humble_blocking() -> Result<(), String> {
+        let mut credentials = load_blocking()?;
+        credentials.humble_session = None;
+        save_credentials_blocking(&credentials)?;
+        delete_entry(HUMBLE_SESSION_ENTRY)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn delete_humble_blocking() -> Result<(), String> {
+        delete_entry(HUMBLE_SESSION_ENTRY)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn save_steam_legacy_blocking(login: SavedSteamLogin) -> Result<(), String> {
         let stored = StoredSteamLogin {
             account_name: login.account_name,
             refresh_token: login.refresh_token,
@@ -208,9 +291,53 @@ mod secure {
         }
     }
 
-    fn delete_steam_blocking() -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    fn delete_steam_legacy_blocking() -> Result<(), String> {
         delete_entry(STEAM_LOGIN_ENTRY)?;
         delete_entry(STEAM_ACCESS_TOKEN_ENTRY)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn save_credentials_blocking(credentials: &DevelopmentCredentials) -> Result<(), String> {
+        if credentials.steam.is_none() && credentials.humble_session.is_none() {
+            return delete_entry(CREDENTIALS_ENTRY);
+        }
+        set_password(CREDENTIALS_ENTRY, &encode_credentials(credentials)?)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn encode_credentials(credentials: &DevelopmentCredentials) -> Result<String, String> {
+        serde_json::to_string(credentials)
+            .map_err(|_| "Could not encode the saved credentials.".to_string())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn decode_credentials(encoded: &str) -> Result<DevelopmentCredentials, String> {
+        serde_json::from_str(encoded)
+            .map_err(|_| "The saved credentials are unreadable.".to_string())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn delete_legacy_entries() -> Result<(), String> {
+        delete_entry(STEAM_LOGIN_ENTRY)?;
+        delete_entry(STEAM_ACCESS_TOKEN_ENTRY)?;
+        delete_entry(HUMBLE_SESSION_ENTRY)
+    }
+
+    fn mutation_gate() -> &'static Mutex<()> {
+        static GATE: OnceLock<Mutex<()>> = OnceLock::new();
+        GATE.get_or_init(|| Mutex::new(()))
+    }
+
+    async fn run_blocking<T>(
+        task: impl FnOnce() -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String>
+    where
+        T: Send + 'static,
+    {
+        tauri::async_runtime::spawn_blocking(task)
+            .await
+            .map_err(|error| format!("System credential-store task failed: {error}"))?
     }
 
     fn entry(name: &str) -> Result<Entry, String> {
@@ -240,6 +367,30 @@ mod secure {
             Err(error) => Err(format!(
                 "Could not remove a system credential-store entry: {error}"
             )),
+        }
+    }
+
+    #[cfg(all(test, target_os = "macos"))]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn consolidated_credentials_round_trip() {
+            let credentials = DevelopmentCredentials {
+                steam: Some(SavedSteamLogin {
+                    account_name: "tester".to_string(),
+                    refresh_token: "refresh".to_string(),
+                    access_token: Some("access".to_string()),
+                }),
+                humble_session: Some("humble".to_string()),
+            };
+
+            let decoded = decode_credentials(&encode_credentials(&credentials).unwrap()).unwrap();
+            let steam = decoded.steam.unwrap();
+            assert_eq!(steam.account_name, "tester");
+            assert_eq!(steam.refresh_token, "refresh");
+            assert_eq!(steam.access_token.as_deref(), Some("access"));
+            assert_eq!(decoded.humble_session.as_deref(), Some("humble"));
         }
     }
 }

@@ -625,6 +625,46 @@ button {
   line-height: 1.5;
 }
 
+.humble-browser-loading {
+  min-width: 224px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 14px;
+  position: fixed;
+  z-index: 160;
+  right: 18px;
+  bottom: 18px;
+  color: #abc4d1;
+  border: 1px solid rgba(102, 192, 244, 0.18);
+  border-radius: 10px;
+  background: rgba(8, 25, 35, 0.96);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(10px);
+  animation: drawer-fade-in 130ms ease-out;
+}
+
+.humble-browser-loading .match-spinner {
+  width: 17px;
+  height: 17px;
+  flex: none;
+}
+
+.humble-browser-loading > span:last-child {
+  display: grid;
+  gap: 2px;
+}
+
+.humble-browser-loading strong {
+  color: #deebf1;
+  font-size: 9px;
+}
+
+.humble-browser-loading small {
+  color: #668292;
+  font-size: 7px;
+}
+
 .onboarding-footnote {
   position: absolute;
   bottom: 18px;

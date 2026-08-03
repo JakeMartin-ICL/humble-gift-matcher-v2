@@ -359,6 +359,35 @@ describe("account onboarding", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("shows progress until the authenticated Humble window is ready", async () => {
+    const user = userEvent.setup();
+    let finishOpening!: () => void;
+    const opening = new Promise<void>((resolve) => {
+      finishOpening = resolve;
+    });
+    mockedInvoke.mockImplementation(async (command) => {
+      if (command === "get_app_view") return connectedView;
+      if (command === "open_humble_entitlement") return opening;
+      return undefined;
+    });
+    render(<App />);
+
+    const sourceLinks = await screen.findAllByRole("button", {
+      name: "Choice Collection",
+    });
+    await user.click(sourceLinks[0]);
+    expect(
+      screen.getByRole("status", { name: "Opening Humble" }),
+    ).toBeInTheDocument();
+
+    finishOpening();
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("status", { name: "Opening Humble" }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
   it("does not start entitlement loading before native session validation", async () => {
     const readyView: AppView = {
       ...connectedView,
