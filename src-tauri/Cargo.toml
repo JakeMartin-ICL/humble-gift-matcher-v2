@@ -1,0 +1,30 @@
+[package]
+name = "humble-gift-matcher"
+version = "0.1.0"
+description = "A local-first matcher for Humble entitlements and Steam wishlists"
+edition = "2024"
+
+[lib]
+name = "humble_gift_matcher_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+base64 = "0.22"
+dirs-next = "2"
+futures-util = "0.3"
+prost = "0.14"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+reqwest = { version = "0.13", features = ["form", "json", "query"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+steamroom = { version = "0.3.0", features = ["serde"] }
+steamroom-client = { version = "0.3.0", features = ["serde"] }
+tokio = { version = "1", features = ["sync", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
