@@ -242,7 +242,7 @@ impl Default for AppView {
             entitlements: EntitlementSyncView::default(),
             wishlists: WishlistSyncView::default(),
             steam_reviews: SteamReviewSyncView::default(),
-            development_cache: cfg!(debug_assertions),
+            development_cache: crate::credential_store::development_cache_enabled(),
         }
     }
 }
@@ -265,6 +265,7 @@ pub struct AppState {
     pub wishlist_memberships: Arc<RwLock<BTreeMap<u32, Vec<WishlistPersonView>>>>,
     pub steam_session: Arc<RwLock<Option<SteamSession>>>,
     pub humble_session: Arc<RwLock<Option<String>>>,
+    #[cfg(debug_assertions)]
     pub humble_cookie_signature: Arc<Mutex<Option<String>>>,
     pub humble_rejected_session_signature: Arc<Mutex<Option<u64>>>,
     pub humble_validation_gate: Arc<Mutex<()>>,

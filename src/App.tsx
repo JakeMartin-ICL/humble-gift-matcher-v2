@@ -668,7 +668,7 @@ function Workspace({
 
         {view.developmentCache && (
           <aside className="development-banner">
-            <span>Development build</span>
+            <span>Insecure development cache</span>
             Sessions are currently stored in the local development cache.
           </aside>
         )}

@@ -224,13 +224,21 @@ async fn login_with_refresh_token(
     let access_token = if saved.access_token.is_some() {
         saved.access_token.clone()
     } else {
-        match generate_access_token(&saved.refresh_token, steam_id).await {
-            Ok(access_token) => Some(access_token),
-            Err(error) => {
-                #[cfg(debug_assertions)]
-                eprintln!("STEAM_ACCESS_TOKEN_REFRESH_ERROR={error}");
-                None
+        #[cfg(debug_assertions)]
+        {
+            match generate_access_token(&saved.refresh_token, steam_id).await {
+                Ok(access_token) => Some(access_token),
+                Err(error) => {
+                    eprintln!("STEAM_ACCESS_TOKEN_REFRESH_ERROR={error}");
+                    None
+                }
             }
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            generate_access_token(&saved.refresh_token, steam_id)
+                .await
+                .ok()
         }
     };
     let client = LoginBuilder::new()
@@ -263,9 +271,9 @@ async fn finish_login(
     if let Some(access_token) = access_token {
         match get_oauth_friend_ids(&access_token).await {
             Ok(oauth_friend_ids) => friend_ids.extend(oauth_friend_ids),
-            Err(error) => {
+            Err(_error) => {
                 #[cfg(debug_assertions)]
-                eprintln!("STEAM_FRIEND_LIST_ERROR={error}");
+                eprintln!("STEAM_FRIEND_LIST_ERROR={_error}");
             }
         }
     }
@@ -301,9 +309,9 @@ async fn finish_login(
             eprintln!("STEAM_OWNED_GAME_COUNT={}", app_ids.len());
             (true, app_ids)
         }
-        Err(error) => {
+        Err(_error) => {
             #[cfg(debug_assertions)]
-            eprintln!("STEAM_OWNED_GAMES_ERROR={}", sanitise_error(&error));
+            eprintln!("STEAM_OWNED_GAMES_ERROR={}", sanitise_error(&_error));
             (false, Default::default())
         }
     };

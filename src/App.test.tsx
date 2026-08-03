@@ -233,10 +233,21 @@ describe("account onboarding", () => {
 
   it("supports the development Humble session fallback", async () => {
     const user = userEvent.setup();
+    mockedInvoke.mockImplementation(async (command) => {
+      if (command === "get_app_view") {
+        return {
+          ...initialAppView,
+          developmentCache: true,
+        };
+      }
+      return undefined;
+    });
     render(<App />);
 
     await user.click(
-      screen.getByRole("button", { name: "Use a session cookie instead" }),
+      await screen.findByRole("button", {
+        name: "Use a session cookie instead",
+      }),
     );
     await user.type(
       screen.getByLabelText("Development `_simpleauth_sess`"),
@@ -261,7 +272,7 @@ describe("account onboarding", () => {
       await screen.findByRole("heading", { name: "Wishlist matches" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Jake")).toBeInTheDocument();
-    expect(screen.getByText("Development build")).toBeInTheDocument();
+    expect(screen.getByText("Insecure development cache")).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: "Gift-ready entitlements" }),
     ).toBeInTheDocument();

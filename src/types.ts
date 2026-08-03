@@ -207,5 +207,5 @@ export const initialAppView: AppView = {
     total: 0,
     items: {},
   },
-  developmentCache: true,
+  developmentCache: false,
 };

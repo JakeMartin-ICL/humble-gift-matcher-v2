@@ -95,43 +95,44 @@ pub async fn connect_humble_with_cookie(
     state: State<'_, AppState>,
     session: String,
 ) -> Result<(), String> {
-    #[cfg(not(debug_assertions))]
-    return Err("Manual Humble session entry is available only in development builds".to_string());
+    if !credential_store::development_cache_enabled() {
+        return Err(
+            "Manual Humble session entry requires the insecure development cache opt-in."
+                .to_string(),
+        );
+    }
 
-    #[cfg(debug_assertions)]
-    {
-        let session = session.trim();
-        if session.is_empty() || session.len() < 16 || session.len() > 16_384 {
-            return Err("Enter a valid Humble session value".to_string());
+    let session = session.trim();
+    if session.is_empty() || session.len() < 16 || session.len() > 16_384 {
+        return Err("Enter a valid Humble session value".to_string());
+    }
+    let state = state.inner();
+    state
+        .update_view(|view| {
+            view.humble.phase = "connecting".to_string();
+            view.humble.message = "Validating the Humble session…".to_string();
+            view.humble.error = None;
+        })
+        .await;
+    match entitlements::validate_humble_session(session).await {
+        Ok(()) => {
+            remember_humble_session(state, session.to_string()).await?;
+            entitlements::start_refresh(state.clone()).await
         }
-        let state = state.inner();
-        state
-            .update_view(|view| {
-                view.humble.phase = "connecting".to_string();
-                view.humble.message = "Validating the Humble session…".to_string();
-                view.humble.error = None;
-            })
-            .await;
-        match entitlements::validate_humble_session(session).await {
-            Ok(()) => {
-                remember_humble_session(state, session.to_string()).await?;
-                entitlements::start_refresh(state.clone()).await
-            }
-            Err(HumbleSessionValidationError::Expired) => {
-                forget_expired_session(state).await?;
-                Err("The Humble session expired. Sign in again.".to_string())
-            }
-            Err(HumbleSessionValidationError::Unavailable(error)) => {
-                state
-                    .update_view(|view| {
-                        view.humble.phase = "error".to_string();
-                        view.humble.message =
-                            "Humble could not verify the session just now.".to_string();
-                        view.humble.error = Some(error.clone());
-                    })
-                    .await;
-                Err(error)
-            }
+        Err(HumbleSessionValidationError::Expired) => {
+            forget_expired_session(state).await?;
+            Err("The Humble session expired. Sign in again.".to_string())
+        }
+        Err(HumbleSessionValidationError::Unavailable(error)) => {
+            state
+                .update_view(|view| {
+                    view.humble.phase = "error".to_string();
+                    view.humble.message =
+                        "Humble could not verify the session just now.".to_string();
+                    view.humble.error = Some(error.clone());
+                })
+                .await;
+            Err(error)
         }
     }
 }

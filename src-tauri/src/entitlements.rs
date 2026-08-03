@@ -274,9 +274,9 @@ async fn run_refresh(state: &AppState) -> Result<(), HumbleApiError> {
         total_orders,
         items: entitlements.clone(),
     };
-    if let Err(error) = save_cache(cache).await {
+    if let Err(_error) = save_cache(cache).await {
         #[cfg(debug_assertions)]
-        eprintln!("HUMBLE_CACHE_WRITE_ERROR={}", sanitise_error(&error));
+        eprintln!("HUMBLE_CACHE_WRITE_ERROR={}", sanitise_error(&_error));
     }
     state
         .update_view(|view| {
@@ -509,18 +509,18 @@ async fn load_choice_entitlements(
         Ok(page) => {
             match parse_choice_page(&page, &choice_order.order_key, &choice_order.parent_name) {
                 Ok(items) => items,
-                Err(error) => {
+                Err(_error) => {
                     #[cfg(debug_assertions)]
-                    eprintln!("HUMBLE_CHOICE_PARSE_ERROR={}", sanitise_error(&error));
+                    eprintln!("HUMBLE_CHOICE_PARSE_ERROR={}", sanitise_error(&_error));
                     choice_order.fallback_items
                 }
             }
         }
-        Err(error) => {
+        Err(_error) => {
             #[cfg(debug_assertions)]
             eprintln!(
                 "HUMBLE_CHOICE_FETCH_ERROR={}",
-                sanitise_error(&error.to_string())
+                sanitise_error(&_error.to_string())
             );
             choice_order.fallback_items
         }

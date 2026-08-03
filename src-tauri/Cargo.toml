@@ -17,6 +17,7 @@ tauri-plugin-opener = "2"
 base64 = "0.22"
 dirs-next = "2"
 futures-util = "0.3"
+keyring = { version = "4", features = ["v1"] }
 prost = "0.14"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 reqwest = { version = "0.13", features = ["form", "json", "query"] }
