@@ -49,6 +49,7 @@ export type Entitlement = {
   status: EntitlementStatus;
   reasons: string[];
   purchaseUrl: string | null;
+  expirationDate: string | null;
   regionRestricted: boolean;
   packageAmbiguity: boolean;
 };

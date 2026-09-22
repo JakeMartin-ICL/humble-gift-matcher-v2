@@ -74,6 +74,8 @@ pub struct EntitlementView {
     pub status: String,
     pub reasons: Vec<String>,
     pub purchase_url: Option<String>,
+    #[serde(default)]
+    pub expiration_date: Option<String>,
     pub region_restricted: bool,
     pub package_ambiguity: bool,
 }

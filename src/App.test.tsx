@@ -61,6 +61,7 @@ const connectedView: AppView = {
         status: "available",
         reasons: ["Visible, unrevealed Steam entitlement."],
         purchaseUrl: "https://www.humblebundle.com/downloads?key=safe",
+        expirationDate: "2027-05-09T06:59:00",
         regionRestricted: false,
         packageAmbiguity: false,
       },
@@ -79,6 +80,7 @@ const connectedView: AppView = {
         status: "needs_mapping",
         reasons: ["Humble did not provide a valid Steam AppID."],
         purchaseUrl: "https://www.humblebundle.com/downloads?key=safe-two",
+        expirationDate: null,
         regionRestricted: true,
         packageAmbiguity: true,
       },
@@ -95,6 +97,7 @@ const connectedView: AppView = {
         status: "revealed",
         reasons: ["The key value has already been revealed on Humble."],
         purchaseUrl: "https://www.humblebundle.com/downloads?key=safe-three",
+        expirationDate: null,
         regionRestricted: false,
         packageAmbiguity: false,
       },
@@ -447,6 +450,7 @@ describe("account onboarding", () => {
             steamAppId: 321,
             steamName: "Exact Title Match",
             mappingSource: "automatic",
+            expirationDate: null,
             reasons: ["Automatic high-confidence Steam title match."],
           },
           {
@@ -457,6 +461,7 @@ describe("account onboarding", () => {
             steamAppId: 654,
             steamName: "Corrected Steam Title",
             mappingSource: "manual",
+            expirationDate: null,
             reasons: ["Steam mapping corrected locally."],
           },
         ],
@@ -492,6 +497,15 @@ describe("account onboarding", () => {
     expect(
       screen.getByLabelText("Already in your Steam library"),
     ).toHaveAttribute("data-tooltip", "Already in your Steam library");
+    expect(
+      screen.getByRole("img", { name: /Key expires .*2027/ }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Exact Title Match")).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Expiring only" }),
+    );
+    expect(screen.getByText("Giftable Hero")).toBeInTheDocument();
+    expect(screen.queryByText("Exact Title Match")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /People/ }));
     expect(
@@ -547,6 +561,7 @@ describe("account onboarding", () => {
             name: "Rating A",
             steamName: "Rating A",
             steamAppId: 101,
+            expirationDate: "2027-05-09T06:59:00",
           },
           {
             ...available,
@@ -554,6 +569,7 @@ describe("account onboarding", () => {
             name: "Rating B",
             steamName: "Rating B",
             steamAppId: 102,
+            expirationDate: "2026-09-01T06:59:00",
           },
           {
             ...available,
@@ -561,6 +577,7 @@ describe("account onboarding", () => {
             name: "Popular",
             steamName: "Popular",
             steamAppId: 103,
+            expirationDate: null,
           },
         ],
       },
@@ -627,6 +644,32 @@ describe("account onboarding", () => {
       expect.stringContaining("Rating B"),
       expect.stringContaining("Rating A"),
     ]);
+
+    await user.click(screen.getByRole("button", { name: "Expiring only" }));
+    expect(
+      screen.getByRole("table", {
+        name: "Available Humble entitlements sorted by expiry date",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Expiry" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Most reviewed" }),
+    ).not.toBeInTheDocument();
+    const expiringRows = screen.getAllByRole("row").slice(1);
+    expect(
+      expiringRows.map(
+        (row) => within(row).getAllByRole("cell")[0].textContent,
+      ),
+    ).toEqual([
+      expect.stringContaining("Rating B"),
+      expect.stringContaining("Rating A"),
+    ]);
+    expect(within(expiringRows[0]).getAllByRole("cell")[2]).toHaveTextContent(
+      "2026",
+    );
+    expect(within(expiringRows[1]).getAllByRole("cell")[2]).toHaveTextContent(
+      "2027",
+    );
   });
 
   it("loads Steam review summaries only when entitlements are opened", async () => {

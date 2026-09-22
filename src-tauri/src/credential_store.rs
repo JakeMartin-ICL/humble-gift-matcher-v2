@@ -4,11 +4,14 @@ const DEVELOPMENT_CACHE_ENV: &str = "HGM_INSECURE_DEV_CREDENTIAL_CACHE";
 const KEYRING_SERVICE: &str = "com.jakemartin.humble-gift-matcher";
 #[cfg(target_os = "macos")]
 const CREDENTIALS_ENTRY: &str = "credentials-v1";
+#[cfg(not(target_os = "macos"))]
 const STEAM_LOGIN_ENTRY: &str = "steam-login";
+#[cfg(not(target_os = "macos"))]
 const STEAM_ACCESS_TOKEN_ENTRY: &str = "steam-access-token";
+#[cfg(not(target_os = "macos"))]
 const HUMBLE_SESSION_ENTRY: &str = "humble-session";
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SavedSteamLogin {
     pub account_name: String,
     pub refresh_token: String,
@@ -16,7 +19,7 @@ pub struct SavedSteamLogin {
     pub access_token: Option<String>,
 }
 
-#[derive(Clone, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DevelopmentCredentials {
     pub steam: Option<SavedSteamLogin>,
     pub humble_session: Option<String>,
@@ -66,6 +69,15 @@ pub async fn delete_steam() -> Result<(), String> {
     secure::delete_steam().await
 }
 
+pub async fn forget_expired_steam() -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    if development_cache_enabled() {
+        return development::delete_steam().await;
+    }
+
+    secure::forget_expired_steam().await
+}
+
 pub async fn save_humble(session: String) -> Result<(), String> {
     #[cfg(debug_assertions)]
     if development_cache_enabled() {
@@ -82,6 +94,15 @@ pub async fn delete_humble() -> Result<(), String> {
     }
 
     secure::delete_humble().await
+}
+
+pub async fn forget_expired_humble() -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    if development_cache_enabled() {
+        return development::delete_humble().await;
+    }
+
+    secure::forget_expired_humble().await
 }
 
 fn development_cache_value_enabled(value: &str) -> bool {
@@ -117,74 +138,219 @@ async fn migrate_development_cache(
 mod secure {
     #[cfg(target_os = "macos")]
     use super::CREDENTIALS_ENTRY;
-    use super::{
-        DevelopmentCredentials, HUMBLE_SESSION_ENTRY, KEYRING_SERVICE, STEAM_ACCESS_TOKEN_ENTRY,
-        STEAM_LOGIN_ENTRY, SavedSteamLogin,
-    };
+    use super::{DevelopmentCredentials, KEYRING_SERVICE, SavedSteamLogin};
+    #[cfg(not(target_os = "macos"))]
+    use super::{HUMBLE_SESSION_ENTRY, STEAM_ACCESS_TOKEN_ENTRY, STEAM_LOGIN_ENTRY};
     use keyring::{Entry, Error};
+    #[cfg(target_os = "macos")]
+    use std::future::Future;
     use std::sync::OnceLock;
     use tokio::sync::Mutex;
 
+    #[cfg(not(target_os = "macos"))]
     #[derive(Deserialize, Serialize)]
     struct StoredSteamLogin {
         account_name: String,
         refresh_token: String,
     }
 
+    #[cfg(not(target_os = "macos"))]
     use serde::{Deserialize, Serialize};
 
     pub async fn load() -> Result<DevelopmentCredentials, String> {
-        let _guard = mutation_gate().lock().await;
-        run_blocking(load_blocking).await
+        #[cfg(target_os = "macos")]
+        {
+            let mut snapshot = credential_snapshot().lock().await;
+            load_snapshot_once(&mut snapshot, run_blocking(load_macos_blocking)).await
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _guard = mutation_gate().lock().await;
+            run_blocking(load_legacy_credentials).await
+        }
     }
 
     #[cfg(debug_assertions)]
     pub async fn save_all(credentials: DevelopmentCredentials) -> Result<(), String> {
-        let _guard = mutation_gate().lock().await;
-        run_blocking(move || save_all_blocking(credentials)).await
+        #[cfg(target_os = "macos")]
+        {
+            replace_macos_credentials(credentials).await
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _guard = mutation_gate().lock().await;
+            run_blocking(move || save_all_legacy_blocking(credentials)).await
+        }
     }
 
     pub async fn save_steam(login: SavedSteamLogin) -> Result<(), String> {
-        let _guard = mutation_gate().lock().await;
-        run_blocking(move || save_steam_blocking(login)).await
+        #[cfg(target_os = "macos")]
+        {
+            update_macos_credentials(move |credentials| {
+                credentials.steam = Some(login);
+            })
+            .await
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _guard = mutation_gate().lock().await;
+            run_blocking(move || save_steam_legacy_blocking(login)).await
+        }
     }
 
     pub async fn delete_steam() -> Result<(), String> {
-        let _guard = mutation_gate().lock().await;
-        run_blocking(delete_steam_blocking).await
+        #[cfg(target_os = "macos")]
+        {
+            update_macos_credentials(|credentials| credentials.steam = None).await
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _guard = mutation_gate().lock().await;
+            run_blocking(delete_steam_legacy_blocking).await
+        }
+    }
+
+    pub async fn forget_expired_steam() -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            update_macos_snapshot(|credentials| credentials.steam = None).await
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            delete_steam().await
+        }
     }
 
     pub async fn save_humble(session: String) -> Result<(), String> {
-        let _guard = mutation_gate().lock().await;
-        run_blocking(move || save_humble_blocking(session)).await
+        #[cfg(target_os = "macos")]
+        {
+            update_macos_credentials(move |credentials| {
+                credentials.humble_session = Some(session);
+            })
+            .await
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _guard = mutation_gate().lock().await;
+            run_blocking(move || set_password(HUMBLE_SESSION_ENTRY, &session)).await
+        }
     }
 
     pub async fn delete_humble() -> Result<(), String> {
-        let _guard = mutation_gate().lock().await;
-        run_blocking(delete_humble_blocking).await
+        #[cfg(target_os = "macos")]
+        {
+            update_macos_credentials(|credentials| credentials.humble_session = None).await
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _guard = mutation_gate().lock().await;
+            run_blocking(|| delete_entry(HUMBLE_SESSION_ENTRY)).await
+        }
+    }
+
+    pub async fn forget_expired_humble() -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        {
+            update_macos_snapshot(|credentials| credentials.humble_session = None).await
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            delete_humble().await
+        }
     }
 
     #[cfg(target_os = "macos")]
-    fn load_blocking() -> Result<DevelopmentCredentials, String> {
-        if let Some(encoded) = read_optional(CREDENTIALS_ENTRY)? {
-            return decode_credentials(&encoded);
-        }
+    fn credential_snapshot() -> &'static Mutex<Option<DevelopmentCredentials>> {
+        static SNAPSHOT: OnceLock<Mutex<Option<DevelopmentCredentials>>> = OnceLock::new();
+        SNAPSHOT.get_or_init(|| Mutex::new(None))
+    }
 
-        let credentials = load_legacy_credentials()?;
-        if credentials.steam.is_some() || credentials.humble_session.is_some() {
-            save_credentials_blocking(&credentials)?;
-            // Do not touch the three legacy items again during startup:
-            // macOS can request a second authorization for each deletion.
-            // The next credential mutation or disconnect cleans them up.
+    #[cfg(target_os = "macos")]
+    async fn load_snapshot_once<F>(
+        snapshot: &mut Option<DevelopmentCredentials>,
+        load: F,
+    ) -> Result<DevelopmentCredentials, String>
+    where
+        F: Future<Output = Result<DevelopmentCredentials, String>>,
+    {
+        if let Some(credentials) = snapshot.as_ref() {
+            return Ok(credentials.clone());
         }
+        let credentials = load.await?;
+        *snapshot = Some(credentials.clone());
         Ok(credentials)
     }
 
-    #[cfg(not(target_os = "macos"))]
-    fn load_blocking() -> Result<DevelopmentCredentials, String> {
-        load_legacy_credentials()
+    #[cfg(target_os = "macos")]
+    async fn update_macos_credentials(
+        update: impl FnOnce(&mut DevelopmentCredentials),
+    ) -> Result<(), String> {
+        let mut snapshot = credential_snapshot().lock().await;
+        let current = load_snapshot_once(&mut snapshot, run_blocking(load_macos_blocking)).await?;
+        let mut updated = current.clone();
+        update(&mut updated);
+        if updated == current {
+            return Ok(());
+        }
+        let stored = updated.clone();
+        run_blocking(move || save_macos_blocking(&stored)).await?;
+        *snapshot = Some(updated);
+        Ok(())
     }
 
+    #[cfg(target_os = "macos")]
+    async fn update_macos_snapshot(
+        update: impl FnOnce(&mut DevelopmentCredentials),
+    ) -> Result<(), String> {
+        let mut snapshot = credential_snapshot().lock().await;
+        let mut credentials =
+            load_snapshot_once(&mut snapshot, run_blocking(load_macos_blocking)).await?;
+        update(&mut credentials);
+        // Automatic expiry handling must not trigger another Keychain prompt.
+        // Keep the stale value only in Keychain until an explicit disconnect or
+        // a replacement login writes the consolidated entry again.
+        *snapshot = Some(credentials);
+        Ok(())
+    }
+
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    async fn replace_macos_credentials(credentials: DevelopmentCredentials) -> Result<(), String> {
+        let mut snapshot = credential_snapshot().lock().await;
+        let current = load_snapshot_once(&mut snapshot, run_blocking(load_macos_blocking)).await?;
+        if credentials == current {
+            return Ok(());
+        }
+        let stored = credentials.clone();
+        run_blocking(move || save_macos_blocking(&stored)).await?;
+        *snapshot = Some(credentials);
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    fn load_macos_blocking() -> Result<DevelopmentCredentials, String> {
+        read_optional(CREDENTIALS_ENTRY)?
+            .map(|encoded| decode_credentials(&encoded))
+            .transpose()
+            .map(Option::unwrap_or_default)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn save_macos_blocking(credentials: &DevelopmentCredentials) -> Result<(), String> {
+        if credentials.steam.is_none() && credentials.humble_session.is_none() {
+            return delete_entry(CREDENTIALS_ENTRY);
+        }
+        set_password(CREDENTIALS_ENTRY, &encode_credentials(credentials)?)
+    }
+
+    #[cfg(not(target_os = "macos"))]
     fn load_legacy_credentials() -> Result<DevelopmentCredentials, String> {
         let stored_login = read_optional(STEAM_LOGIN_ENTRY)?
             .map(|encoded| {
@@ -205,14 +371,8 @@ mod secure {
         })
     }
 
-    #[cfg(all(debug_assertions, target_os = "macos"))]
-    fn save_all_blocking(credentials: DevelopmentCredentials) -> Result<(), String> {
-        save_credentials_blocking(&credentials)?;
-        delete_legacy_entries()
-    }
-
     #[cfg(all(debug_assertions, not(target_os = "macos")))]
-    fn save_all_blocking(credentials: DevelopmentCredentials) -> Result<(), String> {
+    fn save_all_legacy_blocking(credentials: DevelopmentCredentials) -> Result<(), String> {
         match credentials.steam {
             Some(login) => save_steam_legacy_blocking(login)?,
             None => delete_steam_legacy_blocking()?,
@@ -221,59 +381,6 @@ mod secure {
             Some(session) => set_password(HUMBLE_SESSION_ENTRY, &session),
             None => delete_entry(HUMBLE_SESSION_ENTRY),
         }
-    }
-
-    #[cfg(target_os = "macos")]
-    fn save_steam_blocking(login: SavedSteamLogin) -> Result<(), String> {
-        let mut credentials = load_blocking()?;
-        credentials.steam = Some(login);
-        save_credentials_blocking(&credentials)?;
-        delete_legacy_entries()
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn save_steam_blocking(login: SavedSteamLogin) -> Result<(), String> {
-        save_steam_legacy_blocking(login)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn delete_steam_blocking() -> Result<(), String> {
-        let mut credentials = load_blocking()?;
-        credentials.steam = None;
-        save_credentials_blocking(&credentials)?;
-        delete_entry(STEAM_LOGIN_ENTRY)?;
-        delete_entry(STEAM_ACCESS_TOKEN_ENTRY)
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn delete_steam_blocking() -> Result<(), String> {
-        delete_steam_legacy_blocking()
-    }
-
-    #[cfg(target_os = "macos")]
-    fn save_humble_blocking(session: String) -> Result<(), String> {
-        let mut credentials = load_blocking()?;
-        credentials.humble_session = Some(session);
-        save_credentials_blocking(&credentials)?;
-        delete_legacy_entries()
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn save_humble_blocking(session: String) -> Result<(), String> {
-        set_password(HUMBLE_SESSION_ENTRY, &session)
-    }
-
-    #[cfg(target_os = "macos")]
-    fn delete_humble_blocking() -> Result<(), String> {
-        let mut credentials = load_blocking()?;
-        credentials.humble_session = None;
-        save_credentials_blocking(&credentials)?;
-        delete_entry(HUMBLE_SESSION_ENTRY)
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn delete_humble_blocking() -> Result<(), String> {
-        delete_entry(HUMBLE_SESSION_ENTRY)
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -298,14 +405,6 @@ mod secure {
     }
 
     #[cfg(target_os = "macos")]
-    fn save_credentials_blocking(credentials: &DevelopmentCredentials) -> Result<(), String> {
-        if credentials.steam.is_none() && credentials.humble_session.is_none() {
-            return delete_entry(CREDENTIALS_ENTRY);
-        }
-        set_password(CREDENTIALS_ENTRY, &encode_credentials(credentials)?)
-    }
-
-    #[cfg(target_os = "macos")]
     fn encode_credentials(credentials: &DevelopmentCredentials) -> Result<String, String> {
         serde_json::to_string(credentials)
             .map_err(|_| "Could not encode the saved credentials.".to_string())
@@ -317,13 +416,7 @@ mod secure {
             .map_err(|_| "The saved credentials are unreadable.".to_string())
     }
 
-    #[cfg(target_os = "macos")]
-    fn delete_legacy_entries() -> Result<(), String> {
-        delete_entry(STEAM_LOGIN_ENTRY)?;
-        delete_entry(STEAM_ACCESS_TOKEN_ENTRY)?;
-        delete_entry(HUMBLE_SESSION_ENTRY)
-    }
-
+    #[cfg(not(target_os = "macos"))]
     fn mutation_gate() -> &'static Mutex<()> {
         static GATE: OnceLock<Mutex<()>> = OnceLock::new();
         GATE.get_or_init(|| Mutex::new(()))
@@ -391,6 +484,29 @@ mod secure {
             assert_eq!(steam.refresh_token, "refresh");
             assert_eq!(steam.access_token.as_deref(), Some("access"));
             assert_eq!(decoded.humble_session.as_deref(), Some("humble"));
+        }
+
+        #[tokio::test]
+        async fn credential_snapshot_is_loaded_only_once() {
+            use std::cell::Cell;
+
+            let loads = Cell::new(0);
+            let mut snapshot = None;
+            let first = load_snapshot_once(&mut snapshot, async {
+                loads.set(loads.get() + 1);
+                Ok(DevelopmentCredentials::default())
+            })
+            .await
+            .unwrap();
+            let second = load_snapshot_once(&mut snapshot, async {
+                loads.set(loads.get() + 1);
+                Ok(DevelopmentCredentials::default())
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(loads.get(), 1);
+            assert_eq!(first, second);
         }
     }
 }

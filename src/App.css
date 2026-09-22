@@ -1105,6 +1105,32 @@ button {
   box-shadow: inset 0 0 0 1px rgba(102, 192, 244, 0.08);
 }
 
+.discovery-controls {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.expiry-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 9px 10px;
+  color: #806f55;
+  border: 1px solid rgba(226, 175, 91, 0.12);
+  border-radius: 7px;
+  background: rgba(226, 175, 91, 0.025);
+  font-size: 8px;
+  font-weight: 750;
+}
+
+.expiry-filter.active {
+  color: #f0c477;
+  border-color: rgba(226, 175, 91, 0.25);
+  background: rgba(226, 175, 91, 0.09);
+}
+
 .review-loading {
   display: grid;
   grid-template-columns: minmax(100px, 220px) auto;
@@ -1150,6 +1176,19 @@ button {
   gap: 18px;
 }
 
+.discovery-table.expiring {
+  min-width: 820px;
+}
+
+.discovery-table.expiring .discovery-table-head,
+.discovery-table.expiring .discovery-row {
+  grid-template-columns:
+    minmax(250px, 1.1fr)
+    minmax(190px, 0.8fr)
+    minmax(110px, 0.4fr)
+    minmax(180px, 0.7fr);
+}
+
 .discovery-table-head {
   min-height: 33px;
   padding: 0 19px;
@@ -1184,6 +1223,22 @@ button {
   min-width: 0;
   display: grid;
   gap: 4px;
+}
+
+.discovery-expiry {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #f0c477;
+  font-size: 9px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.discovery-expiry > span {
+  color: #d7a958;
+  font-size: 10px;
 }
 
 .discovery-source strong {
@@ -1570,7 +1625,8 @@ button {
   flex: 0 1 auto;
 }
 
-.owned-badge {
+.owned-badge,
+.expiry-badge {
   width: 15px;
   height: 15px;
   flex: none;
@@ -1588,7 +1644,15 @@ button {
   user-select: none;
 }
 
-.owned-badge::after {
+.expiry-badge {
+  color: #e2af5b;
+  border-color: rgba(226, 175, 91, 0.28);
+  background: rgba(169, 111, 35, 0.14);
+  font-size: 7px;
+}
+
+.owned-badge::after,
+.expiry-badge::after {
   content: attr(data-tooltip);
   width: max-content;
   max-width: 170px;
@@ -1616,12 +1680,15 @@ button {
 }
 
 .owned-badge:hover::after,
-.owned-badge:focus-visible::after {
+.owned-badge:focus-visible::after,
+.expiry-badge:hover::after,
+.expiry-badge:focus-visible::after {
   opacity: 1;
   transform: translateY(-50%) translateX(0);
 }
 
-.owned-badge:focus-visible {
+.owned-badge:focus-visible,
+.expiry-badge:focus-visible {
   outline: 2px solid rgba(102, 192, 244, 0.55);
   outline-offset: 2px;
 }

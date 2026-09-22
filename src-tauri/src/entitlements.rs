@@ -12,7 +12,7 @@ use tauri::State;
 const ORDER_LIST_URL: &str = "https://www.humblebundle.com/api/v1/user/order";
 const ORDERS_URL: &str = "https://www.humblebundle.com/api/v1/orders";
 const ORDER_BATCH_SIZE: usize = 25;
-const CACHE_VERSION: u32 = 2;
+const CACHE_VERSION: u32 = 4;
 const CACHE_TTL_SECONDS: u64 = 24 * 60 * 60;
 const CHOICE_PAGE_CONCURRENCY: usize = 6;
 
@@ -152,7 +152,7 @@ pub async fn start_refresh(state: AppState) -> Result<(), String> {
             eprintln!("HUMBLE_SYNC_ERROR={}", sanitise_error(&error.to_string()));
             if matches!(error, HumbleApiError::Authentication(_)) {
                 *task_state.humble_session.write().await = None;
-                let _ = credential_store::delete_humble().await;
+                let _ = credential_store::forget_expired_humble().await;
                 task_state
                     .update_view(|view| {
                         view.humble.phase = "error".to_string();
@@ -508,7 +508,10 @@ async fn load_choice_entitlements(
     let mut items = match request_choice_page(client, session, &choice_order.choice_url).await {
         Ok(page) => {
             match parse_choice_page(&page, &choice_order.order_key, &choice_order.parent_name) {
-                Ok(items) => items,
+                Ok(mut items) => {
+                    merge_choice_order_metadata(&mut items, &choice_order.fallback_items);
+                    items
+                }
                 Err(_error) => {
                     #[cfg(debug_assertions)]
                     eprintln!("HUMBLE_CHOICE_PARSE_ERROR={}", sanitise_error(&_error));
@@ -657,6 +660,7 @@ fn parse_entitlement(
     let hidden = bool_field(item, "visible") == Some(false);
     let expired =
         bool_field(item, "is_expired") == Some(true) || bool_field(item, "expired") == Some(true);
+    let expiration_date = parse_expiration_date(item);
     let region_restricted = item
         .get("region_restrictions")
         .is_some_and(has_meaningful_value)
@@ -723,6 +727,7 @@ fn parse_entitlement(
         reasons,
         purchase_url: is_safe_order_key(order_key)
             .then(|| format!("https://www.humblebundle.com/downloads?key={order_key}")),
+        expiration_date,
         region_restricted,
         package_ambiguity,
     })
@@ -736,6 +741,41 @@ fn string_field<'a>(item: &'a Map<String, Value>, name: &str) -> Option<&'a str>
 
 fn bool_field(item: &Map<String, Value>, name: &str) -> Option<bool> {
     item.get(name).and_then(Value::as_bool)
+}
+
+fn parse_expiration_date(item: &Map<String, Value>) -> Option<String> {
+    let value =
+        string_field(item, "expiration_date").or_else(|| string_field(item, "expiry_date"))?;
+    let bytes = value.as_bytes();
+    let valid_date_prefix = bytes.len() >= 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[..4].iter().all(u8::is_ascii_digit)
+        && bytes[5..7].iter().all(u8::is_ascii_digit)
+        && bytes[8..10].iter().all(u8::is_ascii_digit);
+    (valid_date_prefix
+        && value.len() <= 40
+        && bytes.iter().all(|byte| {
+            byte.is_ascii_digit() || matches!(byte, b'-' | b':' | b'T' | b'Z' | b'+' | b'.')
+        }))
+    .then(|| value.to_string())
+}
+
+fn merge_choice_order_metadata(
+    choice_items: &mut [EntitlementView],
+    order_items: &[EntitlementView],
+) {
+    for choice_item in choice_items {
+        let Some(order_item) = order_items.iter().find(|order_item| {
+            order_item.mapping_key == choice_item.mapping_key
+                && order_item.key_type_label == choice_item.key_type_label
+        }) else {
+            continue;
+        };
+        choice_item
+            .expiration_date
+            .clone_from(&order_item.expiration_date);
+    }
 }
 
 fn parse_app_id(value: Option<&Value>) -> Option<u32> {
@@ -882,6 +922,9 @@ mod tests {
                             "key_type": "steam",
                             "key_type_human_name": "Steam",
                             "steam_app_id": 123,
+                            "expiration_date": "2027-05-09T06:59:00",
+                            "expiry_date": "2027-05-09T06:59:00",
+                            "num_days_until_expired": 262,
                             "visible": true
                         },
                         {
@@ -916,6 +959,10 @@ mod tests {
         assert_eq!(summary.revealed, 1);
         assert_eq!(summary.excluded, 1);
         assert_eq!(parsed.entitlements[0].steam_app_id, Some(123));
+        assert_eq!(
+            parsed.entitlements[0].expiration_date.as_deref(),
+            Some("2027-05-09T06:59:00")
+        );
         let encoded = serde_json::to_string(&parsed.entitlements).unwrap();
         assert!(!encoded.contains("AAAAA-BBBBB-CCCCC"));
         assert!(!encoded.contains("redeemed_key_val"));
@@ -959,7 +1006,23 @@ mod tests {
         let page = format!(
             "<html><script id=\"webpack-monthly-product-data\" type=\"application/json\">{monthly_data}</script></html>"
         );
-        let parsed = parse_choice_page(&page, "safe-order-key", "July 2026 Humble Choice").unwrap();
+        let mut parsed =
+            parse_choice_page(&page, "safe-order-key", "July 2026 Humble Choice").unwrap();
+        let dated_order_item = parse_entitlement(
+            "safe-order-key",
+            0,
+            "July 2026 Humble Choice",
+            serde_json::json!({
+                "human_name": "TUNIC",
+                "machine_name": "tunic_choice_steam",
+                "key_type": "steam",
+                "steam_app_id": 553420,
+                "expiration_date": "2027-05-09T06:59:00"
+            })
+            .as_object(),
+        )
+        .unwrap();
+        merge_choice_order_metadata(&mut parsed, &[dated_order_item]);
 
         assert_eq!(parsed.len(), 2);
         assert_eq!(
@@ -969,6 +1032,15 @@ mod tests {
                 .unwrap()
                 .status,
             "available"
+        );
+        assert_eq!(
+            parsed
+                .iter()
+                .find(|item| item.name == "Tunic")
+                .unwrap()
+                .expiration_date
+                .as_deref(),
+            Some("2027-05-09T06:59:00")
         );
         assert_eq!(
             parsed
@@ -988,6 +1060,17 @@ mod tests {
         assert_eq!(parse_app_id(Some(&Value::from(0))), None);
         assert_eq!(parse_app_id(Some(&Value::from("not-an-id"))), None);
         assert_eq!(parse_app_id(Some(&Value::from("42"))), Some(42));
+    }
+
+    #[test]
+    fn expiration_dates_are_constrained() {
+        let valid = serde_json::json!({ "expiry_date": "2027-05-09T06:59:00Z" });
+        let invalid = serde_json::json!({ "expiration_date": "next Thursday" });
+        assert_eq!(
+            parse_expiration_date(valid.as_object().unwrap()).as_deref(),
+            Some("2027-05-09T06:59:00Z")
+        );
+        assert_eq!(parse_expiration_date(invalid.as_object().unwrap()), None);
     }
 
     #[test]

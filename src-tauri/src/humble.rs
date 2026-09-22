@@ -415,7 +415,7 @@ async fn forget_expired_session(state: &AppState) -> Result<(), String> {
             view.entitlements = Default::default();
         })
         .await;
-    credential_store::delete_humble().await
+    credential_store::forget_expired_humble().await
 }
 
 fn session_signature(session: &str) -> u64 {

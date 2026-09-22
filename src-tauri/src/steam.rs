@@ -141,7 +141,7 @@ async fn run_login(
                 return finish_login(state, client, steam_id, access_token, true).await;
             }
             Err(_) => {
-                credential_store::delete_steam().await?;
+                credential_store::forget_expired_steam().await?;
                 state
                     .update_view(|view| {
                         view.steam.remembered = false;

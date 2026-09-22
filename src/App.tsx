@@ -851,6 +851,36 @@ function OwnedBadge() {
   );
 }
 
+function ExpiryBadge({ item }: { item: Entitlement }) {
+  if (!item.expirationDate) return null;
+  const label = `Key ${
+    item.status === "expired" ? "expired" : "expires"
+  } ${formatExpirationDate(item.expirationDate)}`;
+  return (
+    <span
+      className="expiry-badge"
+      data-tooltip={label}
+      aria-label={label}
+      role="img"
+      tabIndex={0}
+    >
+      ⌛
+    </span>
+  );
+}
+
+function formatExpirationDate(value: string) {
+  const [year, month, day] = value
+    .slice(0, 10)
+    .split("-")
+    .map(Number);
+  return new Intl.DateTimeFormat(undefined, {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(year, month - 1, day));
+}
+
 function comparableGameTitle(title: string) {
   return title
     .normalize("NFKD")
@@ -963,6 +993,7 @@ function MatchWorkspace({
                       {match.steamName}
                     </button>
                     {ownedAppIds.has(match.appId) && <OwnedBadge />}
+                    {entitlement && <ExpiryBadge item={entitlement} />}
                   </span>
                   {entitlement?.purchaseUrl ? (
                     <button
@@ -1033,6 +1064,7 @@ function EntitlementDiscoveryWorkspace({
   onOpenHumble: (item: Entitlement) => void;
 }) {
   const [sort, setSort] = useState<"rating" | "reviews">("rating");
+  const [expiringOnly, setExpiringOnly] = useState(false);
   const ownedAppIds = new Set(view.steam.ownedAppIds);
   const normalizedQuery = query.trim().toLowerCase();
   const reviewFor = (appId: number | null) =>
@@ -1042,6 +1074,7 @@ function EntitlementDiscoveryWorkspace({
       (item) =>
         item.status === "available" &&
         item.steamAppId &&
+        (!expiringOnly || item.expirationDate) &&
         (!normalizedQuery ||
           [item.name, item.steamName, item.parentName, item.steamAppId].some(
             (value) =>
@@ -1051,6 +1084,12 @@ function EntitlementDiscoveryWorkspace({
           )),
     )
     .sort((left, right) => {
+      if (expiringOnly) {
+        const expiryOrder = (left.expirationDate ?? "").localeCompare(
+          right.expirationDate ?? "",
+        );
+        if (expiryOrder !== 0) return expiryOrder;
+      }
       const leftReview = reviewFor(left.steamAppId);
       const rightReview = reviewFor(right.steamAppId);
       const leftRating = leftReview?.positivePercentage ?? -1;
@@ -1082,26 +1121,40 @@ function EntitlementDiscoveryWorkspace({
           <p className="kicker">Unrevealed on Humble</p>
           <h2>Hidden gems in your Humble library</h2>
           <small>
-            {items.length.toLocaleString()} mapped Steam entitlements ·
-            lifetime user reviews
+            {expiringOnly
+              ? `${items.length.toLocaleString()} expiring entitlements · soonest first`
+              : `${items.length.toLocaleString()} mapped Steam entitlements · lifetime user reviews`}
           </small>
         </div>
-        <div className="sort-control" aria-label="Entitlement sorting">
+        <div className="discovery-controls">
+          {!expiringOnly && (
+            <div className="sort-control" aria-label="Entitlement sorting">
+              <button
+                type="button"
+                className={sort === "rating" ? "active" : ""}
+                aria-pressed={sort === "rating"}
+                onClick={() => setSort("rating")}
+              >
+                Top rated
+              </button>
+              <button
+                type="button"
+                className={sort === "reviews" ? "active" : ""}
+                aria-pressed={sort === "reviews"}
+                onClick={() => setSort("reviews")}
+              >
+                Most reviewed
+              </button>
+            </div>
+          )}
           <button
             type="button"
-            className={sort === "rating" ? "active" : ""}
-            aria-pressed={sort === "rating"}
-            onClick={() => setSort("rating")}
+            className={`expiry-filter${expiringOnly ? " active" : ""}`}
+            aria-pressed={expiringOnly}
+            onClick={() => setExpiringOnly((current) => !current)}
           >
-            Top rated
-          </button>
-          <button
-            type="button"
-            className={sort === "reviews" ? "active" : ""}
-            aria-pressed={sort === "reviews"}
-            onClick={() => setSort("reviews")}
-          >
-            Most reviewed
+            <span aria-hidden="true">⌛</span>
+            Expiring only
           </button>
         </div>
       </header>
@@ -1117,13 +1170,18 @@ function EntitlementDiscoveryWorkspace({
 
       {items.length ? (
         <div
-          className="discovery-table"
+          className={`discovery-table${expiringOnly ? " expiring" : ""}`}
           role="table"
-          aria-label="Available Humble entitlements ranked by Steam reviews"
+          aria-label={
+            expiringOnly
+              ? "Available Humble entitlements sorted by expiry date"
+              : "Available Humble entitlements ranked by Steam reviews"
+          }
         >
           <div className="discovery-table-head" role="row">
             <span role="columnheader">Game</span>
             <span role="columnheader">Humble collection</span>
+            {expiringOnly && <span role="columnheader">Expiry</span>}
             <span role="columnheader">Steam rating</span>
           </div>
           {items.map((item) => {
@@ -1150,6 +1208,7 @@ function EntitlementDiscoveryWorkspace({
                       </button>
                       {item.steamAppId &&
                         ownedAppIds.has(item.steamAppId) && <OwnedBadge />}
+                      <ExpiryBadge item={item} />
                     </span>
                     <small>Steam App {item.steamAppId}</small>
                   </span>
@@ -1170,6 +1229,14 @@ function EntitlementDiscoveryWorkspace({
                     <small>Humble title: {item.name}</small>
                   )}
                 </div>
+                {expiringOnly && item.expirationDate && (
+                  <div className="discovery-expiry" role="cell">
+                    <span aria-hidden="true">⌛</span>
+                    <time dateTime={item.expirationDate}>
+                      {formatExpirationDate(item.expirationDate)}
+                    </time>
+                  </div>
+                )}
                 <div className="review-score" role="cell">
                   {review?.positivePercentage !== null &&
                   review?.positivePercentage !== undefined ? (
@@ -1214,7 +1281,9 @@ function EntitlementDiscoveryWorkspace({
           <span aria-hidden="true">◇</span>
           <strong>No available entitlements found</strong>
           <small>
-            {query
+            {expiringOnly
+              ? "No available Steam gifts with expiry dates match this view."
+              : query
               ? "No available Steam gifts match this search."
               : "Available, mapped Steam entitlements will appear here."}
           </small>
@@ -1615,9 +1684,13 @@ function EntitlementWorkspace({
                           {item.name}
                         </button>
                         {ownedAppIds.has(item.steamAppId) && <OwnedBadge />}
+                        <ExpiryBadge item={item} />
                       </span>
                     ) : (
-                      <strong>{item.name}</strong>
+                      <span className="game-title-line">
+                        <strong>{item.name}</strong>
+                        <ExpiryBadge item={item} />
+                      </span>
                     )}
                     {item.purchaseUrl ? (
                       <button
